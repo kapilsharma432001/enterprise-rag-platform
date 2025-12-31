@@ -1,14 +1,31 @@
 # This file will contain the core AI logic: PDF -> Vectors
 import os
 from typing import List
+import nltk
+import ssl
 from fastapi import UploadFile
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader, UnstructuredFileLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from app.config import settings
 
 # innitialize embeddings model
 embeddings_model = OpenAIEmbeddings(openai_api_key=settings.OPENAI_API_KEY)
+
+# Fix SSL issue for NLTK download on some systems (e.g. macOS)
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
+
+# Download necessary NLTK data for UnstructuredFileLoader
+for dependency in ["punkt_tab", "averaged_perceptron_tagger"]:
+    try:
+        nltk.data.find(f"tokenizers/{dependency}" if "punkt" in dependency else f"taggers/{dependency}")
+    except LookupError:
+        nltk.download(dependency)
 
 async def process_file(file: UploadFile, tenant_id: str, conn):
     # save the temp file: langchain loaders needs a file path on disk
@@ -18,8 +35,13 @@ async def process_file(file: UploadFile, tenant_id: str, conn):
     with open(file_location, "wb+") as file_object:
         file_object.write(await file.read())
     
-    # load and split the PDF
-    loader = PyPDFLoader(file_location)
+    # Select loader based on file extension
+    if file_location.lower().endswith(".pdf"):
+        loader = PyPDFLoader(file_location)
+    else:
+        # Use Unstructured for generic file support (txt, docx, etc.)
+        loader = UnstructuredFileLoader(file_location)
+
     documents = loader.load()
 
     text_splitter = RecursiveCharacterTextSplitter(
@@ -51,6 +73,3 @@ async def process_file(file: UploadFile, tenant_id: str, conn):
     # cleanup temp file
     os.remove(file_location)
     return len(data_to_insert)
-
-
-
